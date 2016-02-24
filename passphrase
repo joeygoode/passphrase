@@ -1,0 +1,31 @@
+#!/usr/bin/env python3
+
+import argparse
+import hashlib
+import base64
+
+#Description and arguments
+def parse_args():
+    parser = argparse.ArgumentParser(description='Generate a passphrase')
+    parser.add_argument('-site', required=True)
+    parser.add_argument('-username', required=True)
+    parser.add_argument('-secret', required=True)
+    parser.add_argument('-length', type=int, default=None)
+    return parser.parse_args()
+
+#Main function
+def main():
+    args = parse_args()
+    passwd = args.username + args.secret
+    dk = hashlib.pbkdf2_hmac('sha256',
+                             passwd.encode('utf-8', 'ignore'),
+                             args.site.encode('utf-8', 'ignore'),
+                             500000)
+    passphrase = base64.b64encode(dk).decode('utf-8')
+    if args.length:
+        passphrase = passphrase[:args.length]
+    print(passphrase)
+
+if __name__ == "__main__":
+    main()
+ 

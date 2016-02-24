@@ -1,0 +1,1 @@
+Simple tool for generating passphrases.  Responds to typical arguments, like -h.
