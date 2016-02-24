@@ -3,28 +3,93 @@
 import argparse
 import base64
 import hashlib
+import os
+import sqlite3
+
+db_path = os.path.join(os.environ['HOME'],'.passphrase')
 
 #Description and arguments
 def parse_args():
     parser = argparse.ArgumentParser(description='Generate a passphrase')
     parser.add_argument('-site', required=True)
-    parser.add_argument('-username', required=True)
+    parser.add_argument('-username', default=None)
     parser.add_argument('-secret', required=True)
-    parser.add_argument('-length', type=int, default=None)
+    parser.add_argument('-length', type=int, default=None,
+                        help='max length of the passphrase (0 corresponds to the block size)')
     return parser.parse_args()
+
+def db_setup():
+    conn = sqlite3.connect(db_path)
+    conn.execute('''
+CREATE TABLE IF NOT EXISTS settings (
+    site text UNIQUE NOT NULL,
+    username text UNIQUE NOT NULL,
+    length integer)''')
+    conn.commit()
+    return conn
+
+class Context:
+    """Everything needed to generate a password but the secret"""
+
+    def __init__(self, site):
+        self.site = site
+        self.username = None
+        self.length = None
+
+    def insert(self, conn):
+        """Insert into the db at conn"""
+        conn.execute('''INSERT OR REPLACE INTO settings VALUES (?,?,?)''',
+                     (self.site, self.username, self.length))
+        conn.commit()
+
+    def retrieve(self, conn):
+        """Retrieve from the db at conn"""
+        c = conn.cursor()
+        c.execute('''SELECT username, length from settings WHERE site = ?''', (self.site,))
+        row = c.fetchone()
+        if not row:
+            raise KeyError("No row with site " + self.site)
+        self.username = row[0]
+        self.length = row[1]
+
+    def generate(self, secret):
+        passwd = self.username + secret
+        dk = hashlib.pbkdf2_hmac('sha256',
+                                 passwd.encode('utf-8', 'ignore'),
+                                 self.site.encode('utf-8', 'ignore'),
+                                 500000)
+        passphrase = base64.b64encode(dk).decode('utf-8')
+        if self.length:
+            passphrase = passphrase[:self.length]
+        return passphrase
+
 
 #Main function
 def main():
     args = parse_args()
-    passwd = args.username + args.secret
-    dk = hashlib.pbkdf2_hmac('sha256',
-                             passwd.encode('utf-8', 'ignore'),
-                             args.site.encode('utf-8', 'ignore'),
-                             500000)
-    passphrase = base64.b64encode(dk).decode('utf-8')
-    if args.length:
-        passphrase = passphrase[:args.length]
-    print(passphrase)
+    conn = db_setup()
+    c = Context(args.site)
+    if args.username is None:
+        c.retrieve(conn)
+    else:
+        try:
+            c.retrieve(conn)
+            if c.username != args.username:
+                print("WARNING: New username provided. This will overwrite the old username (%s)" %
+                      c.username)
+        except KeyError:
+            pass
+        c.username = args.username
+    if args.length is not None:
+        if c.length != args.length:
+            print("WARNING: New length provided. This will overwrite the old length (%s)" %
+                  (str(c.length) if c.length else 'infinite'))
+        c.length = args.length
+    else:
+        if not c.length:
+            c.length = 0
+    c.insert(conn)
+    print(c.generate(args.secret))
 
 if __name__ == "__main__":
     main()
