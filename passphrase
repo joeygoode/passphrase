@@ -16,6 +16,11 @@ def parse_args():
     parser.add_argument('-secret', required=True)
     parser.add_argument('-length', type=int, default=None,
                         help='max length of the passphrase (0 corresponds to the block size)')
+    subparsers = parser.add_subparsers(help='subcommands: forbid', dest='subcommand')
+    forbid_parser = subparsers.add_parser('forbid', help='forbid a character from appearing in passwords')
+    forbid_parser.add_argument('-site', required=True)
+    forbid_parser.add_argument('-forbid', required=True)
+
     return parser.parse_args()
 
 def db_setup():
@@ -25,6 +30,12 @@ CREATE TABLE IF NOT EXISTS settings (
     site text UNIQUE NOT NULL,
     username text UNIQUE NOT NULL,
     length integer)''')
+    conn.execute('''
+CREATE TABLE IF NOT EXISTS forbidden_characters (
+    site text UNIQUE NOT NULL,
+    forbidden text NOT NULL,
+    UNIQUE(site, forbidden) ON CONFLICT ROLLBACK)''')
+
     conn.commit()
     return conn
 
@@ -63,11 +74,33 @@ class Context:
             passphrase = passphrase[:self.length]
         return passphrase
 
+    def prune(self, conn, passphrase):
+        """Remove forbidden characters in the resultant password"""
+        c = conn.cursor()
+        c.execute('''SELECT forbidden FROM forbidden_characters WHERE site = ?''', (self.site,))
+        row = c.fetchone()
+        while row:
+            print("forbidden: " + row[0][0])
+            pruned = ""
+            for i in range(len(passphrase)):
+                if passphrase[i] != row[0][0]:
+                    pruned += passphrase[i]
+            row = c.fetchone()
+            passphrase = pruned
+        return passphrase
 
 #Main function
 def main():
     args = parse_args()
     conn = db_setup()
+
+    if args.subcommand == 'forbid':
+        conn.execute('''INSERT OR REPLACE INTO forbidden_characters VALUES (?,?)''',
+                     (args.site, args.forbid))
+        conn.commit()
+        print('forbidding ' + args.forbid + ' on ' + args.site)
+        return
+
     c = Context(args.site)
     if args.username is None:
         c.retrieve(conn)
@@ -89,7 +122,7 @@ def main():
         if not c.length:
             c.length = 0
     c.insert(conn)
-    print(c.generate(args.secret))
+    print(c.prune(conn, c.generate(args.secret)))
 
 if __name__ == "__main__":
     main()
