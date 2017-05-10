@@ -13,18 +13,23 @@ current_schema_version = 1
 #Description and arguments
 def parse_args():
     parser = argparse.ArgumentParser(description='Generate a passphrase')
-    parser.add_argument('-site', required=True)
-    parser.add_argument('-username', default=None)
-    parser.add_argument('-secret', required=True)
-    parser.add_argument('-length', type=int, default=None,
-                        help='max length of the passphrase (0 corresponds to the block size)')
     subparsers = parser.add_subparsers(help='subcommands: forbid', dest='subcommand')
+
     forbid_parser = subparsers.add_parser('forbid', help='forbid a character from appearing in passwords')
     forbid_parser.add_argument('-site', required=True)
     forbid_parser.add_argument('-forbid', required=True)
+
     set_configuration_parser = subparsers.add_parser('configure', help='set configuration values')
     set_configuration_parser.add_argument('-key', required=True)
     set_configuration_parser.add_argument('-value', required=True)
+
+    new_parser = subparsers.add_parser('new', help='add a new login', aliases=['n'])
+    new_parser.add_argument('-site', required=True)
+    new_parser.add_argument('-username', required=True)
+    new_parser.add_argument('-length', required=True)
+
+    generate_parser = subparsers.add_parser('generate', help='generate a passphrase', aliases=['g'])
+    generate_parser.add_argument('-site', required=True)
 
     return parser.parse_args()
 
@@ -208,28 +213,25 @@ def main():
         conn.commit()
         print('configured ' + args.key + ' to ' + args.value)
         return
-    c = Context(args.site)
-    if args.username is None:
+    if args.subcommand == 'generate' or args.subcommand == 'g':
+        c = Context(args.site)
         c.retrieve(conn)
-    else:
+        print(c.prune(conn, c.generate(conn)))
+    if args.subcommand == 'new' or args.subcommand == 'n':
+        c = Context(args.site)
         try:
             c.retrieve(conn)
             if c.username != args.username:
                 print("WARNING: New username provided. This will overwrite the old username (%s)" %
                       c.username)
+            if c.length != args.length:
+                print("WARNING: New length provided. This will overwrite the old length (%s)" %
+                      (str(c.length) if c.length else 'infinite'))
         except KeyError:
             pass
         c.username = args.username
-    if args.length is not None:
-        if c.length != args.length:
-            print("WARNING: New length provided. This will overwrite the old length (%s)" %
-                  (str(c.length) if c.length else 'infinite'))
         c.length = args.length
-    else:
-        if not c.length:
-            c.length = 0
-    c.insert(conn)
-    print(c.prune(conn, c.generate(conn)))
+        c.insert(conn)
 
 if __name__ == "__main__":
     main()
