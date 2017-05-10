@@ -4,22 +4,32 @@ import argparse
 import base64
 import hashlib
 import os
+import signal
 import sqlite3
+import subprocess
 
 db_path = os.path.join(os.environ['HOME'],'.passphrase')
 current_schema_version = 1
 #Description and arguments
 def parse_args():
     parser = argparse.ArgumentParser(description='Generate a passphrase')
-    parser.add_argument('-site', required=True)
-    parser.add_argument('-username', default=None)
-    parser.add_argument('-secret', required=True)
-    parser.add_argument('-length', type=int, default=None,
-                        help='max length of the passphrase (0 corresponds to the block size)')
     subparsers = parser.add_subparsers(help='subcommands: forbid', dest='subcommand')
+
     forbid_parser = subparsers.add_parser('forbid', help='forbid a character from appearing in passwords')
     forbid_parser.add_argument('-site', required=True)
     forbid_parser.add_argument('-forbid', required=True)
+
+    set_configuration_parser = subparsers.add_parser('configure', help='set configuration values')
+    set_configuration_parser.add_argument('-key', required=True)
+    set_configuration_parser.add_argument('-value', required=True)
+
+    new_parser = subparsers.add_parser('new', help='add a new login', aliases=['n'])
+    new_parser.add_argument('-site', required=True)
+    new_parser.add_argument('-username', required=True)
+    new_parser.add_argument('-length', required=True)
+
+    generate_parser = subparsers.add_parser('generate', help='generate a passphrase', aliases=['g'])
+    generate_parser.add_argument('-site', required=True)
 
     return parser.parse_args()
 
@@ -39,6 +49,15 @@ CREATE TABLE IF NOT EXISTS forbidden_characters (
 site text UNIQUE NOT NULL,
 forbidden text NOT NULL,
 UNIQUE(site, forbidden) ON CONFLICT ROLLBACK)''')
+        elif version == 1:
+            conn.execute('''
+ALTER TABLE settings RENAME TO logins''')
+            conn.execute('''
+CREATE TABLE configurations (
+key text UNIQUE NOT NULL,
+value text NOT NULL)''')
+            conn.execute('''
+INSERT INTO configurations VALUES ("pinentry", "pinentry")''')
         else:
             c.execute('''PRAGMA user_version = ''' + str(version))
             conn.commit()
@@ -50,6 +69,71 @@ def db_setup():
     migrate_db(conn)
     return conn
 
+class TimeoutExpired(BaseException):
+    pass
+
+def timeout_handler(signum, frame):
+    raise TimeoutExpired()
+
+class PinEntry:
+    """Interact with the PinEntry front-end"""
+    process = None
+    default_timeout = 30
+
+    def __init__(self, pinentry, default_timeout = 300):
+        proc = subprocess.run(["tty"], stdout=subprocess.PIPE, universal_newlines=True)
+        self.default_timeout = default_timeout
+        self.process = subprocess.Popen([pinentry, "--display", os.environ["DISPLAY"]], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        output = self.communicate()
+        if output[0:2] != "OK":
+            raise Exception("pinentry didn't initialize correctly: " + output)
+        self.set_time_out(self.default_timeout)
+
+    def communicate(self, message=None, timeout=0):
+        if timeout == 0:
+            timeout = self.default_timeout
+        signal.signal(signal.SIGALRM, timeout_handler)
+        signal.alarm(timeout + 1)
+        output = ""
+        try:
+            if message != None:
+                self.process.stdin.write(message + "\n")
+                self.process.stdin.flush()
+            output = self.process.stdout.readline()
+        except TimeoutExpired as e:
+            _, errors = self.process.communicate(timeout=10)
+            raise Exception(str(errors))
+        except Exception as e:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, signal.SIG_DFL)
+            raise e
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, signal.SIG_DFL)
+        return output
+
+    def check_result(self, result):
+        if result[0:2] != "OK":
+            raise Exception("unexpected pinentry response: " + result)
+
+    def set_time_out(self, timeout):
+        message = "SETTIMEOUT " + str(timeout)
+        self.check_result(self.communicate(message=message))
+
+    def set_descriptive_text(self, text):
+        message = "SETDESC " + str(text)
+        self.check_result(self.communicate(message=message))
+
+    def set_prompt(self, prompt):
+        message = "SETPROMPT " + str(prompt)
+        self.check_result(self.communicate(message=message))
+
+    def get_pin(self):
+        pin = self.communicate(message="GETPIN", timeout=300)
+        if pin[0] == "D":
+            self.check_result(self.communicate())
+            return pin[2:]
+        raise Exception("unexpected pinentry response: " + pin)
+
 class Context:
     """Everything needed to generate a password but the secret"""
 
@@ -60,21 +144,33 @@ class Context:
 
     def insert(self, conn):
         """Insert into the db at conn"""
-        conn.execute('''INSERT OR REPLACE INTO settings VALUES (?,?,?)''',
+        conn.execute('''INSERT OR REPLACE INTO logins VALUES (?,?,?)''',
                      (self.site, self.username, self.length))
         conn.commit()
 
     def retrieve(self, conn):
         """Retrieve from the db at conn"""
         c = conn.cursor()
-        c.execute('''SELECT username, length from settings WHERE site = ?''', (self.site,))
+        c.execute('''SELECT username, length from logins WHERE site = ?''', (self.site,))
         row = c.fetchone()
         if not row:
             raise KeyError("No row with site " + self.site)
         self.username = row[0]
         self.length = row[1]
 
-    def generate(self, secret):
+    def get_secret(self, conn):
+        c = conn.cursor()
+        c.execute('''SELECT value from configurations WHERE key = ?''', ("pinentry",))
+        pinentry_program = c.fetchone()[0]
+
+        pinentry = PinEntry(pinentry_program)
+        pinentry.set_descriptive_text("Enter passphrase for " + self.username + " @ " + self.site + ":")
+        pinentry.set_prompt("Passphrase:")
+        return pinentry.get_pin()
+
+
+    def generate(self, conn):
+        secret = self.get_secret(conn)
         passwd = self.username + secret
         dk = hashlib.pbkdf2_hmac('sha256',
                                  passwd.encode('utf-8', 'ignore'),
@@ -111,29 +207,31 @@ def main():
         conn.commit()
         print('forbidding ' + args.forbid + ' on ' + args.site)
         return
-
-    c = Context(args.site)
-    if args.username is None:
+    if args.subcommand == 'configure':
+        conn.execute('''INSERT OR REPLACE INTO configurations VALUES (?,?)''',
+                     (args.key, args.value))
+        conn.commit()
+        print('configured ' + args.key + ' to ' + args.value)
+        return
+    if args.subcommand == 'generate' or args.subcommand == 'g':
+        c = Context(args.site)
         c.retrieve(conn)
-    else:
+        print(c.prune(conn, c.generate(conn)))
+    if args.subcommand == 'new' or args.subcommand == 'n':
+        c = Context(args.site)
         try:
             c.retrieve(conn)
             if c.username != args.username:
                 print("WARNING: New username provided. This will overwrite the old username (%s)" %
                       c.username)
+            if c.length != args.length:
+                print("WARNING: New length provided. This will overwrite the old length (%s)" %
+                      (str(c.length) if c.length else 'infinite'))
         except KeyError:
             pass
         c.username = args.username
-    if args.length is not None:
-        if c.length != args.length:
-            print("WARNING: New length provided. This will overwrite the old length (%s)" %
-                  (str(c.length) if c.length else 'infinite'))
         c.length = args.length
-    else:
-        if not c.length:
-            c.length = 0
-    c.insert(conn)
-    print(c.prune(conn, c.generate(args.secret)))
+        c.insert(conn)
 
 if __name__ == "__main__":
     main()
