@@ -7,7 +7,7 @@ import os
 import sqlite3
 
 db_path = os.path.join(os.environ['HOME'],'.passphrase')
-
+current_schema_version = 1
 #Description and arguments
 def parse_args():
     parser = argparse.ArgumentParser(description='Generate a passphrase')
@@ -23,20 +23,31 @@ def parse_args():
 
     return parser.parse_args()
 
+def migrate_db(conn):
+    c = conn.cursor()
+    c.execute('''PRAGMA user_version''')
+    version = int(c.fetchone()[0])
+    while True:
+        if version == 0:
+            conn.execute('''
+CREATE TABLE IF NOT EXISTS settings (
+site text UNIQUE NOT NULL,
+username text UNIQUE NOT NULL,
+length integer)''')
+            conn.execute('''
+CREATE TABLE IF NOT EXISTS forbidden_characters (
+site text UNIQUE NOT NULL,
+forbidden text NOT NULL,
+UNIQUE(site, forbidden) ON CONFLICT ROLLBACK)''')
+        else:
+            c.execute('''PRAGMA user_version = ''' + str(version))
+            conn.commit()
+            break
+        version += 1
+
 def db_setup():
     conn = sqlite3.connect(db_path)
-    conn.execute('''
-CREATE TABLE IF NOT EXISTS settings (
-    site text UNIQUE NOT NULL,
-    username text UNIQUE NOT NULL,
-    length integer)''')
-    conn.execute('''
-CREATE TABLE IF NOT EXISTS forbidden_characters (
-    site text UNIQUE NOT NULL,
-    forbidden text NOT NULL,
-    UNIQUE(site, forbidden) ON CONFLICT ROLLBACK)''')
-
-    conn.commit()
+    migrate_db(conn)
     return conn
 
 class Context:
