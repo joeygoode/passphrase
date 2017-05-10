@@ -4,7 +4,9 @@ import argparse
 import base64
 import hashlib
 import os
+import signal
 import sqlite3
+import subprocess
 
 db_path = os.path.join(os.environ['HOME'],'.passphrase')
 current_schema_version = 1
@@ -62,6 +64,71 @@ def db_setup():
     migrate_db(conn)
     return conn
 
+class TimeoutExpired(BaseException):
+    pass
+
+def timeout_handler(signum, frame):
+    raise TimeoutExpired()
+
+class PinEntry:
+    """Interact with the PinEntry front-end"""
+    process = None
+    default_timeout = 30
+
+    def __init__(self, pinentry, default_timeout = 300):
+        proc = subprocess.run(["tty"], stdout=subprocess.PIPE, universal_newlines=True)
+        self.default_timeout = default_timeout
+        self.process = subprocess.Popen([pinentry, "--display", os.environ["DISPLAY"]], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        output = self.communicate()
+        if output[0:2] != "OK":
+            raise Exception("pinentry didn't initialize correctly: " + output)
+        self.set_time_out(self.default_timeout)
+
+    def communicate(self, message=None, timeout=0):
+        if timeout == 0:
+            timeout = self.default_timeout
+        signal.signal(signal.SIGALRM, timeout_handler)
+        signal.alarm(timeout + 1)
+        output = ""
+        try:
+            if message != None:
+                self.process.stdin.write(message + "\n")
+                self.process.stdin.flush()
+            output = self.process.stdout.readline()
+        except TimeoutExpired as e:
+            _, errors = self.process.communicate(timeout=10)
+            raise Exception(str(errors))
+        except Exception as e:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, signal.SIG_DFL)
+            raise e
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, signal.SIG_DFL)
+        return output
+
+    def check_result(self, result):
+        if result[0:2] != "OK":
+            raise Exception("unexpected pinentry response: " + result)
+
+    def set_time_out(self, timeout):
+        message = "SETTIMEOUT " + str(timeout)
+        self.check_result(self.communicate(message=message))
+
+    def set_descriptive_text(self, text):
+        message = "SETDESC " + str(text)
+        self.check_result(self.communicate(message=message))
+
+    def set_prompt(self, prompt):
+        message = "SETPROMPT " + str(prompt)
+        self.check_result(self.communicate(message=message))
+
+    def get_pin(self):
+        pin = self.communicate(message="GETPIN", timeout=300)
+        if pin[0] == "D":
+            self.check_result(self.communicate())
+            return pin[2:]
+        raise Exception("unexpected pinentry response: " + pin)
+
 class Context:
     """Everything needed to generate a password but the secret"""
 
@@ -86,7 +153,19 @@ class Context:
         self.username = row[0]
         self.length = row[1]
 
-    def generate(self, secret):
+    def get_secret(self, conn):
+        c = conn.cursor()
+        c.execute('''SELECT value from configurations WHERE key = ?''', ("pinentry",))
+        pinentry_program = c.fetchone()[0]
+
+        pinentry = PinEntry(pinentry_program)
+        pinentry.set_descriptive_text("Enter passphrase for " + self.username + " @ " + self.site + ":")
+        pinentry.set_prompt("Passphrase:")
+        return pinentry.get_pin()
+
+
+    def generate(self, conn):
+        secret = self.get_secret(conn)
         passwd = self.username + secret
         dk = hashlib.pbkdf2_hmac('sha256',
                                  passwd.encode('utf-8', 'ignore'),
@@ -150,7 +229,7 @@ def main():
         if not c.length:
             c.length = 0
     c.insert(conn)
-    print(c.prune(conn, c.generate(args.secret)))
+    print(c.prune(conn, c.generate(conn)))
 
 if __name__ == "__main__":
     main()
