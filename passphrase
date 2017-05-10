@@ -39,6 +39,15 @@ CREATE TABLE IF NOT EXISTS forbidden_characters (
 site text UNIQUE NOT NULL,
 forbidden text NOT NULL,
 UNIQUE(site, forbidden) ON CONFLICT ROLLBACK)''')
+        elif version == 1:
+            conn.execute('''
+ALTER TABLE settings RENAME TO logins''')
+            conn.execute('''
+CREATE TABLE configurations (
+key text UNIQUE NOT NULL,
+value text NOT NULL)''')
+            conn.execute('''
+INSERT INTO configurations VALUES ("pinentry", "pinentry")''')
         else:
             c.execute('''PRAGMA user_version = ''' + str(version))
             conn.commit()
@@ -60,14 +69,14 @@ class Context:
 
     def insert(self, conn):
         """Insert into the db at conn"""
-        conn.execute('''INSERT OR REPLACE INTO settings VALUES (?,?,?)''',
+        conn.execute('''INSERT OR REPLACE INTO logins VALUES (?,?,?)''',
                      (self.site, self.username, self.length))
         conn.commit()
 
     def retrieve(self, conn):
         """Retrieve from the db at conn"""
         c = conn.cursor()
-        c.execute('''SELECT username, length from settings WHERE site = ?''', (self.site,))
+        c.execute('''SELECT username, length from logins WHERE site = ?''', (self.site,))
         row = c.fetchone()
         if not row:
             raise KeyError("No row with site " + self.site)
