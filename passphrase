@@ -20,6 +20,9 @@ def parse_args():
     forbid_parser = subparsers.add_parser('forbid', help='forbid a character from appearing in passwords')
     forbid_parser.add_argument('-site', required=True)
     forbid_parser.add_argument('-forbid', required=True)
+    set_configuration_parser = subparsers.add_parser('configure', help='set configuration values')
+    set_configuration_parser.add_argument('-key', required=True)
+    set_configuration_parser.add_argument('-value', required=True)
 
     return parser.parse_args()
 
@@ -120,7 +123,12 @@ def main():
         conn.commit()
         print('forbidding ' + args.forbid + ' on ' + args.site)
         return
-
+    if args.subcommand == 'configure':
+        conn.execute('''INSERT OR REPLACE INTO configurations VALUES (?,?)''',
+                     (args.key, args.value))
+        conn.commit()
+        print('configured ' + args.key + ' to ' + args.value)
+        return
     c = Context(args.site)
     if args.username is None:
         c.retrieve(conn)
