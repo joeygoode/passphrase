@@ -31,6 +31,9 @@ def parse_args():
     generate_parser = subparsers.add_parser('generate', help='generate a passphrase', aliases=['g'])
     generate_parser.add_argument('-site', required=True)
 
+    lookup_parser = subparsers.add_parser('lookup', help='lookup a username', aliases=['l'])
+    lookup_parser.add_argument('-site', required=True)
+
     return parser.parse_args()
 
 def migrate_db(conn):
@@ -217,6 +220,13 @@ def main():
         c = Context(args.site)
         c.retrieve(conn)
         print(c.prune(conn, c.generate(conn)))
+    if args.subcommand == 'lookup' or args.subcommand == 'l':
+        c = Context(args.site)
+        try:
+            c.retrieve(conn)
+            print(c.username + ' @ ' + c.site)
+        except KeyError:
+            print('no records for ' + args.site)
     if args.subcommand == 'new' or args.subcommand == 'n':
         c = Context(args.site)
         try:
