@@ -26,7 +26,7 @@ def parse_args():
     new_parser = subparsers.add_parser('new', help='add a new login', aliases=['n'])
     new_parser.add_argument('-site', required=True)
     new_parser.add_argument('-username', required=True)
-    new_parser.add_argument('-length', required=True)
+    new_parser.add_argument('-length', required=False)
 
     generate_parser = subparsers.add_parser('generate', help='generate a passphrase', aliases=['g'])
     generate_parser.add_argument('-site', required=True)
