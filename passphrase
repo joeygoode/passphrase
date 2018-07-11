@@ -34,6 +34,9 @@ def parse_args():
     lookup_parser = subparsers.add_parser('lookup', help='lookup a username', aliases=['l'])
     lookup_parser.add_argument('-site', required=True)
 
+    delete_parser = subparsers.add_parser('delete', help='delete a login', aliases=['d'])
+    delete_parser.add_argument('-site', required=True)
+
     return parser.parse_args()
 
 def migrate_db(conn):
@@ -151,6 +154,11 @@ class Context:
                      (self.site, self.username, self.length))
         conn.commit()
 
+    def delete(self, conn):
+        """Delete from the db at conn"""
+        conn.execute('''DELETE FROM logins WHERE site = ?''', (self.site,))
+        conn.commit()
+
     def retrieve(self, conn):
         """Retrieve from the db at conn"""
         c = conn.cursor()
@@ -242,6 +250,13 @@ def main():
         c.username = args.username
         c.length = args.length
         c.insert(conn)
+
+    if args.subcommand == 'delete' or args.subcommand == 'd':
+        c = Context(args.site)
+        try:
+            c.delete(conn)
+        except KeyError:
+            print('no records for ' + args.site)
 
 if __name__ == "__main__":
     main()
