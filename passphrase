@@ -226,7 +226,11 @@ def main():
         return
     if args.subcommand == 'generate' or args.subcommand == 'g':
         c = Context(args.site)
-        c.retrieve(conn)
+        try:
+            c.retrieve(conn)
+        except KeyError:
+            print('no records for ' + args.site)
+            return
         print(c.prune(conn, c.generate(conn)))
     if args.subcommand == 'lookup' or args.subcommand == 'l':
         c = Context(args.site)
