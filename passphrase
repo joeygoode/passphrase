@@ -2,11 +2,14 @@
 
 import argparse
 import base64
+import functools
 import hashlib
+import json
 import os
 import signal
 import sqlite3
 import subprocess
+import urllib.request
 
 db_path = os.path.join(os.environ['HOME'],'.passphrase')
 current_schema_version = 1
@@ -149,6 +152,7 @@ class Context:
         self.site = site
         self.username = None
         self.length = None
+        self.forbidden_characters = None
 
     def insert(self, conn):
         """Insert into the db at conn"""
@@ -163,13 +167,10 @@ class Context:
 
     def retrieve(self, conn):
         """Retrieve from the db at conn"""
-        c = conn.cursor()
-        c.execute('''SELECT username, length from logins WHERE site = ?''', (self.site,))
-        row = c.fetchone()
-        if not row:
-            raise KeyError("No row with site " + self.site)
-        self.username = row[0]
-        self.length = row[1]
+        val = json.loads(urllib.request.urlopen("http://localhost:8000/sites/" + self.site).read())[0]
+        self.username = val['username']
+        self.length = val['length']
+        self.forbidden_characters = val['forbidden_characters']
 
     def get_secret(self, conn):
         c = conn.cursor()
@@ -196,17 +197,11 @@ class Context:
 
     def prune(self, conn, passphrase):
         """Remove forbidden characters in the resultant password"""
-        c = conn.cursor()
-        c.execute('''SELECT forbidden FROM forbidden_characters WHERE site = ?''', (self.site,))
-        row = c.fetchone()
-        while row:
-            print("forbidden: " + row[0][0])
-            pruned = ""
-            for i in range(len(passphrase)):
-                if passphrase[i] != row[0][0]:
-                    pruned += passphrase[i]
-            row = c.fetchone()
-            passphrase = pruned
+        if self.forbidden_characters is None:
+            return passphrase
+        for seq in self.forbidden_characters:
+            segments = passphrase.split(seq)
+            passphrase = functools.reduce(lambda res, nxt: res + nxt, segments, "")
         return passphrase
 
 #Main function

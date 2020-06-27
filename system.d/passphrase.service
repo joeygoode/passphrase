@@ -1,0 +1,8 @@
+[Unit]
+Description=Password Attribute Daemon
+
+[Service]
+ExecStart=%h/bin/passphrase.d
+
+[Install]
+WantedBy=default.target
