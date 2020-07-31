@@ -156,9 +156,14 @@ class Context:
 
     def insert(self, conn):
         """Insert into the db at conn"""
-        conn.execute('''INSERT OR REPLACE INTO logins VALUES (?,?,?)''',
-                     (self.site, self.username, self.length))
-        conn.commit()
+        req_body = json.dumps({'username': self.username,
+            'length': int(self.length),
+            'forbidden_characters': self.forbidden_characters,
+            })
+        req = urllib.request.Request("http://localhost:8000/sites/" + self.site,method="PUT",data=bytes(req_body, encoding='utf-8'))
+        status = urllib.request.urlopen(req).getcode()
+        if status != 201 and status != 204:
+            raise Exception("bad status from server: " + status)
 
     def delete(self, conn):
         """Delete from the db at conn"""
