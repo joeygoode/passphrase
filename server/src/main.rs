@@ -3,17 +3,36 @@
 use serde::{Serialize, Deserialize};
 use serde_json::value::Value;
 #[macro_use] extern crate rocket;
-use rusqlite::{params, Connection, Result, Error};
+use rusqlite::{params, Connection};
 use rocket_contrib::json::Json;
 use rocket::State;
 use std::sync::{Arc, Mutex};
+
+#[derive(Debug)]
+enum Error {
+    RusqliteErr(rusqlite::Error),
+    SerdeJSONErr(serde_json::Error),
+}
+
+impl From<rusqlite::Error> for Error {
+    fn from(e: rusqlite::Error) -> Error {
+        Error::RusqliteErr(e)
+    }
+}
+
+impl From<serde_json::Error> for Error {
+    fn from(e: serde_json::Error) -> Error {
+        Error::SerdeJSONErr(e)
+    }
+}
+
 #[get("/")]
 fn index() -> &'static str {
     "Hello, world!"
 }
 
 #[get("/sites")]
-fn sites(state_db: State<DB>) -> Result<Json<Vec<String>>> {
+fn sites(state_db: State<DB>) -> Result<Json<Vec<String>>, Error> {
     let db = state_db.0.lock().unwrap();
     let mut stmt = db.prepare("SELECT site FROM logins")?;
     let site_iter = stmt.query_map(params![], |row| row.get(0))?;
@@ -27,12 +46,12 @@ fn sites(state_db: State<DB>) -> Result<Json<Vec<String>>> {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct Details {
     length: Option<i32>,
-    forbidden_characters: Value,
+    forbidden_characters: Vec<String>,
     username: String,
 }
 
 #[get("/sites/<site>")]
-fn details_for_site(state_db: State<DB>, site: String) -> Result<Json<Vec<Details>>> {
+fn details_for_site(state_db: State<DB>, site: String) -> Result<Json<Vec<Details>>, Error> {
     let db = state_db.0.lock().unwrap();
     let mut stmt = db.prepare("SELECT username, length, json_group_array(forbidden)
                                FROM logins
@@ -40,36 +59,27 @@ fn details_for_site(state_db: State<DB>, site: String) -> Result<Json<Vec<Detail
                                ON forbidden_characters.site = logins.site
                                WHERE logins.site = ?
                                GROUP BY username, length")?;
+    #[derive(Serialize, Deserialize, Debug, Clone)]
+    struct Intermediary {
+        length: Option<i32>,
+        forbidden_characters: String,
+        username: String
+    }
     let details_iter = stmt.query_map(params![site], |row| {
-        Ok(Details{
+        Ok(Intermediary{
             username: row.get(0)?,
             length: row.get(1)?,
             forbidden_characters: row.get(2)?,
         })
     })?;
     let mut results = Vec::new();
-    let doctor_results = |d: Details| {
-        let forbidden_characters = d.forbidden_characters.clone();
-        match forbidden_characters {
-            Value::Array(a) => {
-                if a.len() == 1 {
-                    match a[0] {
-                        Value::Null => {
-                            let mut cp = d.clone();
-                            cp.forbidden_characters = Value::Null;
-                            cp
-                        }
-                        _ => d
-                    }
-                } else {
-                    d
-                }
-            }
-            _ => panic!(format!("Expected an array but got {}", d.forbidden_characters))
-        }
-    };
     for detail_raw in details_iter {
-        results.push(doctor_results(detail_raw?));
+        let detail = detail_raw?;
+        results.push(Details{
+            length: detail.length,
+            forbidden_characters: serde_json::from_str(&detail.forbidden_characters)?,
+            username: detail.username
+        });
     }
     Ok(Json(results))
 }
@@ -88,7 +98,7 @@ fn make_db() -> Result<DB, Error> {
     Ok(DB(Arc::new(Mutex::new(conn))))
 }
 
-fn main() -> Result<()> {
+fn main() -> Result<(), Error> {
     let db = make_db()?;
 
     rocket::ignite().manage(db)
