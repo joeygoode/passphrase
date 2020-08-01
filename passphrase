@@ -157,8 +157,8 @@ class Context:
     def insert(self, conn):
         """Insert into the db at conn"""
         req_body = json.dumps({'username': self.username,
-            'length': int(self.length),
-            'forbidden_characters': self.forbidden_characters,
+            'length': int(self.length) if self.length != None else None,
+            'forbidden_characters': self.forbidden_characters if self.forbidden_characters != None else [],
             })
         req = urllib.request.Request("http://localhost:8000/sites/" + self.site,method="PUT",data=bytes(req_body, encoding='utf-8'))
         status = urllib.request.urlopen(req).getcode()
@@ -172,7 +172,15 @@ class Context:
 
     def retrieve(self, conn):
         """Retrieve from the db at conn"""
-        val = json.loads(urllib.request.urlopen("http://localhost:8000/sites/" + self.site).read())[0]
+        resp = None
+        try:
+            resp = urllib.request.urlopen("http://localhost:8000/sites/" + self.site)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                raise KeyError
+            else:
+                raise e
+        val = json.loads(resp.read())[0]
         self.username = val['username']
         self.length = val['length']
         self.forbidden_characters = val['forbidden_characters']

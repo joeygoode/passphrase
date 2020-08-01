@@ -15,6 +15,23 @@ enum Error {
     ApplicationErr(String),
 }
 
+enum GetResponse<'r, R: response::Responder<'r>> {
+    Ok(R, std::marker::PhantomData<&'r R>),
+    NotFound(),
+}
+
+impl<'r, R: response::Responder<'r>> response::Responder<'r> for GetResponse<'r, R> {
+    fn respond_to(self, req: &rocket::request::Request) -> response::Result<'r> {
+        match self {
+            GetResponse::Ok(r, _) => r.respond_to(req),
+            GetResponse::NotFound() => response::Response::build()
+                .status(rocket::http::Status::NotFound)
+                .ok(),
+        }
+    }
+}
+
+
 enum PutResponse<'r> {
     Created(CreatedResponse<'r>),
     NoContent(),
@@ -82,7 +99,7 @@ struct Details {
 }
 
 #[get("/sites/<site>")]
-fn details_for_site(state_db: State<DB>, site: String) -> Result<Json<Vec<Details>>, Error> {
+fn details_for_site(state_db: State<DB>, site: String) -> Result<GetResponse<Json<Vec<Details>>>, Error> {
     let db = state_db.0.lock().unwrap();
     let mut stmt = db.prepare("SELECT username, length, json_group_array(forbidden)
                                FROM logins
@@ -106,13 +123,18 @@ fn details_for_site(state_db: State<DB>, site: String) -> Result<Json<Vec<Detail
     let mut results = Vec::new();
     for detail_raw in details_iter {
         let detail = detail_raw?;
+        let maybe_chars: Vec<Option<String>> = serde_json::from_str(&detail.forbidden_characters)?;
         results.push(Details{
             length: detail.length,
-            forbidden_characters: serde_json::from_str(&detail.forbidden_characters)?,
+            forbidden_characters: maybe_chars.into_iter().flatten().collect(),
             username: detail.username
         });
     }
-    Ok(Json(results))
+    if results.len() == 0 {
+        Ok(GetResponse::NotFound())
+    } else {
+        Ok(GetResponse::Ok(Json(results), std::marker::PhantomData))
+    }
 }
 
 #[put("/sites/<site>", data = "<input>")]
