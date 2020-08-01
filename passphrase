@@ -167,8 +167,14 @@ class Context:
 
     def delete(self, conn):
         """Delete from the db at conn"""
-        conn.execute('''DELETE FROM logins WHERE site = ?''', (self.site,))
-        conn.commit()
+        req = urllib.request.Request("http://localhost:8000/sites/" + self.site,method="DELETE")
+        status = urllib.request.urlopen(req).getcode()
+        if status == 204:
+            pass
+        elif status == 404:
+            print("No record found for site: " + self.site)
+        else:
+            raise Exception("bad status from server: " + status)
 
     def retrieve(self, conn):
         """Retrieve from the db at conn"""

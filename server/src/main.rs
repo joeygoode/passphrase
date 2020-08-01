@@ -62,6 +62,24 @@ impl<'r> response::Responder<'r> for CreatedResponse<'r> {
     }
 }
 
+enum DeleteResponse {
+    NoContent(),
+    NotFound(),
+}
+
+impl<'r> response::Responder<'r> for DeleteResponse {
+    fn respond_to(self, _req: &rocket::request::Request) -> response::Result<'r> {
+        match self {
+            DeleteResponse::NoContent() => response::Response::build()
+                .status(rocket::http::Status::NoContent)
+                .ok(),
+            DeleteResponse::NotFound() => response::Response::build()
+                .status(rocket::http::Status::NotFound)
+                .ok(),
+        }
+    }
+}
+
 impl From<rusqlite::Error> for Error {
     fn from(e: rusqlite::Error) -> Error {
         Error::RusqliteErr(e)
@@ -172,6 +190,28 @@ fn put_site(state_db: State<DB>, site: String, input: Json<Details>) -> Result<P
         Ok(PutResponse::Created(CreatedResponse{location: uri!(details_for_site: site)}))
     }
 }
+
+#[delete("/sites/<site>")]
+fn delete_site(state_db: State<DB>, site: String) -> Result<DeleteResponse, Error> {
+    let mut db = state_db.0.lock().unwrap();
+    let tx = db.transaction()?;
+    {
+        let mut delete_forbidden_characters = tx.prepare("DELETE FROM forbidden_characters WHERE site = ?")?;
+        let mut delete_login = tx.prepare("DELETE FROM logins where site = ?")?;
+
+        delete_forbidden_characters.execute(params![site])?;
+        let rows_updated = delete_login.execute(params![site])?;
+        if rows_updated > 1 {
+            return Err(Error::ApplicationErr(format!("deleted too many records for site ({}): {}", site, rows_updated)))
+        }
+        if rows_updated < 1 {
+            return Ok(DeleteResponse::NotFound())
+        }
+    }
+    tx.commit()?;
+    Ok(DeleteResponse::NoContent())
+}
+
 #[derive(Debug)]
 struct Login {
     site: String,
@@ -190,7 +230,7 @@ fn main() -> Result<(), Error> {
     let db = make_db()?;
 
     rocket::ignite().manage(db)
-        .mount("/", routes![index, sites, details_for_site, put_site])
+        .mount("/", routes![index, sites, details_for_site, put_site, delete_site])
         .launch();
     Ok(())
 }
