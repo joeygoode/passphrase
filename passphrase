@@ -152,21 +152,21 @@ class Context:
         self.site = site
         self.username = None
         self.length = None
-        self.forbidden_characters = None
+        self.forbidden_characters = []
 
-    def insert(self, conn):
-        """Insert into the db at conn"""
+    def insert(self):
+        """Store the record"""
         req_body = json.dumps({'username': self.username,
             'length': int(self.length) if self.length != None else None,
-            'forbidden_characters': self.forbidden_characters if self.forbidden_characters != None else [],
+            'forbidden_characters': self.forbidden_characters,
             })
         req = urllib.request.Request("http://localhost:8000/sites/" + self.site,method="PUT",data=bytes(req_body, encoding='utf-8'))
         status = urllib.request.urlopen(req).getcode()
         if status != 201 and status != 204:
             raise Exception("bad status from server: " + status)
 
-    def delete(self, conn):
-        """Delete from the db at conn"""
+    def delete(self):
+        """Delete the record"""
         req = urllib.request.Request("http://localhost:8000/sites/" + self.site,method="DELETE")
         status = urllib.request.urlopen(req).getcode()
         if status == 204:
@@ -176,8 +176,8 @@ class Context:
         else:
             raise Exception("bad status from server: " + status)
 
-    def retrieve(self, conn):
-        """Retrieve from the db at conn"""
+    def retrieve(self):
+        """Retrieve an existing record for self.site"""
         resp = None
         try:
             resp = urllib.request.urlopen("http://localhost:8000/sites/" + self.site)
@@ -214,10 +214,8 @@ class Context:
             passphrase = passphrase[:self.length]
         return passphrase
 
-    def prune(self, conn, passphrase):
+    def prune(self, passphrase):
         """Remove forbidden characters in the resultant password"""
-        if self.forbidden_characters is None:
-            return passphrase
         for seq in self.forbidden_characters:
             segments = passphrase.split(seq)
             passphrase = functools.reduce(lambda res, nxt: res + nxt, segments, "")
@@ -229,9 +227,14 @@ def main():
     conn = db_setup()
 
     if args.subcommand == 'forbid':
-        conn.execute('''INSERT OR REPLACE INTO forbidden_characters VALUES (?,?)''',
-                     (args.site, args.forbid))
-        conn.commit()
+        c = Context(args.site)
+        try:
+            c.retrieve()
+        except KeyError:
+            print('no records for ' + args.site)
+            return
+        c.forbidden_characters.append(args.forbid)
+        c.insert()
         print('forbidding ' + args.forbid + ' on ' + args.site)
         return
     if args.subcommand == 'configure':
@@ -243,22 +246,22 @@ def main():
     if args.subcommand == 'generate' or args.subcommand == 'g':
         c = Context(args.site)
         try:
-            c.retrieve(conn)
+            c.retrieve()
         except KeyError:
             print('no records for ' + args.site)
             return
-        print(c.prune(conn, c.generate(conn)))
+        print(c.prune(c.generate(conn)))
     if args.subcommand == 'lookup' or args.subcommand == 'l':
         c = Context(args.site)
         try:
-            c.retrieve(conn)
+            c.retrieve()
             print(c.username + ' @ ' + c.site)
         except KeyError:
             print('no records for ' + args.site)
     if args.subcommand == 'new' or args.subcommand == 'n':
         c = Context(args.site)
         try:
-            c.retrieve(conn)
+            c.retrieve()
             if c.username != args.username:
                 print("WARNING: New username provided. This will overwrite the old username (%s)" %
                       c.username)
@@ -269,12 +272,12 @@ def main():
             pass
         c.username = args.username
         c.length = args.length
-        c.insert(conn)
+        c.insert()
 
     if args.subcommand == 'delete' or args.subcommand == 'd':
         c = Context(args.site)
         try:
-            c.delete(conn)
+            c.delete()
         except KeyError:
             print('no records for ' + args.site)
 
